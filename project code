@@ -1,0 +1,186 @@
+import cv2
+import time
+from ultralytics import YOLO
+from twilio.rest import Client
+import math
+
+# =========================
+# TWILIO CONFIG
+# =========================
+ACCOUNT_SID = "AC7a83132e8a12aa9db852d3db59161fa0"
+AUTH_TOKEN = "5018508505ef1fc637f7716202ed3f94"
+FROM_NUMBER = "+15393456885"
+TO_NUMBER = "+917550261708"
+
+client = Client(ACCOUNT_SID, AUTH_TOKEN)
+sms_sent = False
+
+# =========================
+# LOAD MODEL & VIDEO
+# =========================
+model = YOLO("yolov8n.pt")
+cap = cv2.VideoCapture("video1.mp4")
+
+fps = cap.get(cv2.CAP_PROP_FPS)
+delay = int(1000 / fps) if fps > 0 else 30
+
+WINDOW_NAME = "Traffic Accident Detection"
+
+# =========================
+# SPEED & TRACKING DATA
+# =========================
+prev_position = {}
+prev_time = {}
+vehicle_speed = {}
+collision_events = {}  # Track collision events between vehicle pairs
+PIXEL_TO_METER = 0.03
+PROCESS_EVERY_N_FRAMES = 2
+frame_count = 0
+last_vehicles = []
+
+# =========================
+# COLLISION DETECTION FUNCTION
+# =========================
+def boxes_collide(box1, box2):
+    """Check if two bounding boxes overlap/collide"""
+    x1_1, y1_1, x2_1, y2_1 = box1
+    x1_2, y1_2, x2_2, y2_2 = box2
+    
+    # Check if boxes do NOT overlap
+    if (x1_1 > x2_2 or x1_2 > x2_1 or y1_1 > y2_2 or y1_2 > y2_1):
+        return False
+    return True
+
+def send_sms():
+    global sms_sent
+    if not sms_sent:
+        client.messages.create(
+            body="🚨 ACCIDENT DETECTED! Immediate action required at location.",
+            from_=FROM_NUMBER,
+            to=TO_NUMBER
+        )
+        sms_sent = True
+        print("🚨 SMS SENT - ACCIDENT DETECTED!")
+
+# =========================
+# MAIN LOOP
+# =========================
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    frame_count += 1
+    frame = cv2.resize(frame, (640, 360))
+
+    # -------- YOLO INFERENCE (FRAME SKIPPING) --------
+    if frame_count % PROCESS_EVERY_N_FRAMES == 0:
+        results = model.track(frame, persist=True, conf=0.4)
+        vehicles = []
+
+        for r in results:
+            if r.boxes.id is None:
+                continue
+
+            for box, tid, cls_id in zip(r.boxes.xyxy, r.boxes.id, r.boxes.cls):
+                cls = int(cls_id)
+                if cls not in [2, 3, 5, 7]:  # car, motorcycle, bus, truck
+                    continue
+
+                x1, y1, x2, y2 = map(int, box)
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                tid = int(tid)
+
+                vehicles.append((tid, cls, (x1, y1, x2, y2), (cx, cy)))
+
+                # -------- SPEED CALCULATION --------
+                now = time.time()
+                if tid in prev_position:
+                    px, py = prev_position[tid]
+                    dt = now - prev_time[tid]
+                    if dt > 0:
+                        pixel_dist = math.hypot(cx - px, cy - py)
+                        dist_m = pixel_dist * PIXEL_TO_METER
+                        speed = (dist_m / dt) * 3.6
+                        # Smooth speed
+                        old_speed = vehicle_speed.get(tid, speed)
+                        vehicle_speed[tid] = 0.7 * old_speed + 0.3 * speed
+                else:
+                    vehicle_speed[tid] = 0
+
+                prev_position[tid] = (cx, cy)
+                prev_time[tid] = now
+
+        last_vehicles = vehicles
+
+        # -------- COLLISION-BASED ACCIDENT DETECTION --------
+        accident_detected = False
+        
+        for i in range(len(vehicles)):
+            for j in range(i + 1, len(vehicles)):
+                id1, cls1, box1, center1 = vehicles[i]
+                id2, cls2, box2, center2 = vehicles[j]
+
+                # Check if bounding boxes actually collide/overlap
+                if boxes_collide(box1, box2):
+                    # Create unique key for vehicle pair
+                    vehicle_pair = tuple(sorted((id1, id2)))
+                    
+                    # Track collision duration
+                    collision_events[vehicle_pair] = collision_events.get(vehicle_pair, 0) + 1
+                    
+                    # Accident confirmed if collision persists for 3+ frames
+                    if collision_events[vehicle_pair] >= 3:
+                        accident_detected = True
+                        print(f"🚨 COLLISION DETECTED: Vehicle {id1} vs Vehicle {id2}")
+                        
+                        # Draw collision highlight
+                        cv2.rectangle(frame, (box1[0], box1[1]), (box1[2], box1[3]), (0, 0, 255), 3)
+                        cv2.rectangle(frame, (box2[0], box2[1]), (box2[2], box2[3]), (0, 0, 255), 3)
+                        
+                        # Draw collision line
+                        cv2.line(frame, center1, center2, (0, 0, 255), 3)
+                        
+                else:
+                    # Reset collision counter if no collision
+                    vehicle_pair = tuple(sorted((id1, id2)))
+                    collision_events[vehicle_pair] = 0
+
+        # Send SMS if accident detected
+        if accident_detected and not sms_sent:
+            send_sms()
+
+    # -------- DRAW RESULTS --------
+    for tid, cls, (x1, y1, x2, y2), center in last_vehicles:
+        speed = int(vehicle_speed.get(tid, 0))
+        
+        # Normal green bounding box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f"ID:{tid} {int(speed)}kmh", 
+                   (x1, y1 - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        cv2.circle(frame, center, 3, (255, 255, 255), -1)
+
+    # -------- ACCIDENT ALERT DISPLAY --------
+    if sms_sent or any(count >= 3 for count in collision_events.values()):
+        cv2.rectangle(frame, (0, 0), (640, 80), (0, 0, 139), -1)  # Dark red background
+        cv2.putText(frame, "🚨 ACCIDENT DETECTED!", 
+                   (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+        cv2.putText(frame, "IMMEDIATE ACTION REQUIRED", 
+                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 150), 2)
+
+    cv2.imshow(WINDOW_NAME, frame)
+
+    # -------- EXIT CONDITIONS --------
+    key = cv2.waitKey(delay) & 0xFF
+    if key == 27:  # ESC key
+        break
+    if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+        break
+
+# =========================
+# CLEAN EXIT
+# =========================
+cap.release()
+cv2.destroyAllWindows()
+print("Traffic Accident Detection ended.")
