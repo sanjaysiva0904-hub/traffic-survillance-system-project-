@@ -23,18 +23,21 @@ To utilize CCTV footage for real-time traffic monitoring
 To detect and track multiple vehicles simultaneously
 To identify and alert speed violations
 To store and manage violation data for future use
+
 ⚙️ Key Features
 Real-time vehicle detection and tracking
 Accurate speed estimation using video analysis
 Automatic alert generation for violations
 Data logging with timestamp and vehicle details
 Low-cost solution using existing CCTV cameras
+
 🌍 Applications
 Smart city traffic management
 Highway speed monitoring
 Accident prevention systems
 Law enforcement automation
 Urban traffic analytics
+
 🧠 Conclusion
 
 This project demonstrates how intelligent technologies like computer vision and AI can transform traditional traffic monitoring systems into automated, efficient, and scalable solutions. By integrating real-time detection, tracking, and alerting mechanisms, the system significantly improves road safety and reduces dependency on manual monitoring methods.
